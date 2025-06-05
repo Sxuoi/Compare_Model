@@ -56,8 +56,20 @@ st.markdown("Compare performance and responses between different AI models")
 with st.sidebar:
     st.header("⚙️ Configuration")
     
-    # API Key
-    api_key = "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"
+    # API Key - Use secrets or user input
+    try:
+        # Try to get API key from secrets first
+        api_key = st.secrets["OPENROUTER_API_KEY"]
+        st.success("✅ API Key loaded from secrets")
+    except (KeyError, AttributeError):
+        # Fallback to user input if secrets not available
+        api_key = st.text_input(
+            "OpenRouter API Key", 
+            type="password",
+            help="Enter your OpenRouter API key. Get one from https://openrouter.ai/"
+        )
+        if not api_key:
+            st.warning("⚠️ Please enter your OpenRouter API key to use the app")
     
     # Model Selection
     st.subheader("Model Selection")
@@ -70,7 +82,7 @@ with st.sidebar:
     model_2 = st.selectbox(
         "Second Model", 
         ["qwen/qwen3-32b", "qwen/qwen3-14b", "anthropic/claude-3-haiku"],
-        index=0
+        index=1
     )
     
     # Parameters
@@ -107,7 +119,9 @@ with col2:
 def make_api_call(model, prompt, api_key, max_tokens, temperature):
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://comparemodel.streamlit.app/",  # Add referer
+        "X-Title": "AI Model Comparison Tool"  # Add title
     }
     
     data = {
@@ -119,46 +133,54 @@ def make_api_call(model, prompt, api_key, max_tokens, temperature):
     
     start_time = time.time()
     
-    response = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers=headers,
-        json=data,
-        timeout=60
-    )
-    
-    end_time = time.time()
-    response_time = end_time - start_time
-    
-    if response.status_code == 200:
-        try:
-            result = response.json()
-            content = result['choices'][0]['message']['content']
-            
-            # Debug: Check if content is empty or None
-            if not content or content.strip() == "":
-                content = "[Empty response from model]"
-            
-            return {
-                "success": True,
-                "content": content,
-                "response_time": response_time,
-                "word_count": len(content.split()),
-                "char_count": len(content),
-                "words_per_second": len(content.split()) / response_time if response_time > 0 else 0,
-                "raw_response": result  # Add raw response for debugging
-            }
-        except (KeyError, IndexError, TypeError) as e:
+    try:
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers=headers,
+            json=data,
+            timeout=60
+        )
+        
+        end_time = time.time()
+        response_time = end_time - start_time
+        
+        if response.status_code == 200:
+            try:
+                result = response.json()
+                content = result['choices'][0]['message']['content']
+                
+                # Debug: Check if content is empty or None
+                if not content or content.strip() == "":
+                    content = "[Empty response from model]"
+                
+                return {
+                    "success": True,
+                    "content": content,
+                    "response_time": response_time,
+                    "word_count": len(content.split()),
+                    "char_count": len(content),
+                    "words_per_second": len(content.split()) / response_time if response_time > 0 else 0,
+                    "raw_response": result  # Add raw response for debugging
+                }
+            except (KeyError, IndexError, TypeError) as e:
+                return {
+                    "success": False,
+                    "error": f"Failed to parse response: {str(e)}",
+                    "response_time": response_time,
+                    "raw_response": response.text
+                }
+        else:
             return {
                 "success": False,
-                "error": f"Failed to parse response: {str(e)}",
+                "error": f"Error {response.status_code}: {response.text}",
                 "response_time": response_time,
-                "raw_response": response.text
+                "status_code": response.status_code
             }
-    else:
+    except requests.exceptions.RequestException as e:
         return {
             "success": False,
-            "error": f"Error {response.status_code}: {response.text}",
-            "response_time": response_time
+            "error": f"Request failed: {str(e)}",
+            "response_time": 0
         }
 
 # Function to display results
@@ -196,6 +218,8 @@ def display_comparison_results(result1, result2, model1_name, model2_name):
             st.error(f"Error: {result1['error']}")
             with st.expander("Debug Info"):
                 st.text(result1.get("raw_response", "No debug info available"))
+                if "status_code" in result1:
+                    st.text(f"Status Code: {result1['status_code']}")
     
     with col2:
         st.subheader(f"{get_model_icon(model2_name)} {model2_name.split('/')[-1].upper()}")
@@ -212,6 +236,8 @@ def display_comparison_results(result1, result2, model1_name, model2_name):
             st.error(f"Error: {result2['error']}")
             with st.expander("Debug Info"):
                 st.text(result2.get("raw_response", "No debug info available"))
+                if "status_code" in result2:
+                    st.text(f"Status Code: {result2['status_code']}")
     
     # Performance comparison (only if both succeeded)
     if result1["success"] and result2["success"]:
@@ -286,6 +312,10 @@ elif test_model_1 and prompt and api_key:
                 st.metric("Words/sec", f"{result['words_per_second']:.1f}")
         else:
             st.error(f"Error: {result['error']}")
+            with st.expander("Debug Info"):
+                st.text(result.get("raw_response", "No debug info available"))
+                if "status_code" in result:
+                    st.text(f"Status Code: {result['status_code']}")
 
 elif test_model_2 and prompt and api_key:
     with st.spinner(f"Loading... Testing {model_2}..."):
@@ -309,6 +339,10 @@ elif test_model_2 and prompt and api_key:
                 st.metric("Words/sec", f"{result['words_per_second']:.1f}")
         else:
             st.error(f"Error: {result['error']}")
+            with st.expander("Debug Info"):
+                st.text(result.get("raw_response", "No debug info available"))
+                if "status_code" in result:
+                    st.text(f"Status Code: {result['status_code']}")
 
 # Validation messages
 if (compare_button or test_model_1 or test_model_2) and not api_key:
